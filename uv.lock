@@ -1890,7 +1890,7 @@ requires-dist = [
     { name = "langfuse", specifier = ">=4.7,<5" },
     { name = "litellm", specifier = ">=1.83.0" },
     { name = "openai", specifier = ">=3.31.0" },
-    { name = "pymongo", extras = ["srv"], specifier = ">=4.15.0" },
+    { name = "pymongo", specifier = ">=4.15.0" },
     { name = "python-dotenv", specifier = ">=1.2.4" },
     { name = "requests", specifier = ">=2.34.2" },
     { name = "trafilatura", specifier = ">=2.3.1" },

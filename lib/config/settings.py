@@ -1,5 +1,11 @@
+from functools import lru_cache
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class ConfigurationError(RuntimeError):
+    pass
 
 
 class Settings(BaseSettings):
@@ -12,9 +18,7 @@ class Settings(BaseSettings):
 
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     openai_chat_model: str = Field(default="gpt-5.6-sol", alias="OPENAI_CHAT_MODEL")
-    openai_vector_store_id = str = Field(
-        default="openai_vector_store_id", alias="OPENAI_VECTOR_STORE_ID"
-    )
+    zenrows_api_key: str | None = Field(default=None, alias="ZENROWS_API_KEY")
 
     mongodb_uri: str | None = Field(default=None, alias="MONGODB_URI")
     mongodb_db: str = Field(default="RAG_assessment", alias="MONGODB_DB")
@@ -46,12 +50,17 @@ class Settings(BaseSettings):
 
     def require_openai(self) -> str:
         if not self.openai_api_key:
-            raise RuntimeError("OPENAI_API_KEY is not configured")
+            raise ConfigurationError("OPENAI_API_KEY is not configured")
         return self.openai_api_key
+
+    def require_zenrows(self) -> str:
+        if not self.zenrows_api_key:
+            raise ConfigurationError("ZENROWS_API_KEY is not configured")
+        return self.zenrows_api_key
 
     def require_mongodb(self) -> str:
         if not self.mongodb_uri:
-            raise RuntimeError("MONGODB_URI is not configured")
+            raise ConfigurationError("MONGODB_URI is not configured")
         return self.mongodb_uri
 
     def require_langfuse(self) -> None:
@@ -61,6 +70,7 @@ class Settings(BaseSettings):
             )
 
 
-def get_settings():
+@lru_cache
+def get_settings() -> Settings:
     settings = Settings()
     return settings
