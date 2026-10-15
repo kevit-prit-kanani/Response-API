@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     mongodb_sessions_collection: str = Field(
         default="sessions", alias="MONGODB_SESSIONS_COLLECTION"
     )
-    mongodb_pdf_collection: str = Field(default="pdf", alias="MONGODB_PDF_COLLECTION")
+    mongodb_chat_collection: str = Field(default="chat", alias="MONGODB_CHAT_COLLECTION")
 
     langfuse_secret_key: str = Field(
         default="langfuse_secret_key", alias="LANGFUSE_SECRET_KEY"
@@ -45,8 +45,6 @@ class Settings(BaseSettings):
         default=None,
         alias="LITELLM_PROXY_API_KEY",
     )
-
-    zenrows_api_key: str | None = Field(default=None, alias="ZENROWS_API_KEY")
 
     def require_openai(self) -> str:
         if not self.openai_api_key:
