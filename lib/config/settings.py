@@ -27,14 +27,11 @@ class Settings(BaseSettings):
     )
     mongodb_chat_collection: str = Field(default="chat", alias="MONGODB_CHAT_COLLECTION")
 
-    langfuse_secret_key: str = Field(
-        default="langfuse_secret_key", alias="LANGFUSE_SECRET_KEY"
-    )
-    langfuse_public_key: str = Field(
-        default="langfuse_public_key", alias="LANGFUSE_PUBLIC_KEY"
-    )
+    langfuse_secret_key: str | None = Field(default=None, alias="LANGFUSE_SECRET_KEY")
+    langfuse_public_key: str | None = Field(default=None, alias="LANGFUSE_PUBLIC_KEY")
     langfuse_base_url: str = Field(
-        default="langfuse_base_url", alias="LANGFUSE_BASE_URL"
+        default="https://cloud.langfuse.com",
+        alias="LANGFUSE_BASE_URL",
     )
 
     litellm_proxy_api_base: str = Field(
@@ -61,11 +58,12 @@ class Settings(BaseSettings):
             raise ConfigurationError("MONGODB_URI is not configured")
         return self.mongodb_uri
 
-    def require_langfuse(self) -> None:
+    def require_langfuse(self) -> tuple[str, str]:
         if not self.langfuse_public_key or not self.langfuse_secret_key:
-            raise RuntimeError(
+            raise ConfigurationError(
                 "LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY must be configured"
             )
+        return self.langfuse_public_key, self.langfuse_secret_key
 
 
 @lru_cache

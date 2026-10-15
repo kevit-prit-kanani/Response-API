@@ -15,3 +15,20 @@ Runtime logs are written to `logs/response_api.log`.
 Configure `ZENROWS_API_KEY`, `OPENAI_API_KEY`, and `MONGODB_URI` in the
 environment (or `.env`). `MONGODB_DB` and `MONGODB_SESSIONS_COLLECTION` are
 optional and default to `RAG_assessment` and `sessions`.
+
+## Chat API
+
+`POST /chat` accepts JSON with `session_id`, `previous_interaction_id` (nullable),
+and `query`. The `session_id` must refer to a scraped session. Relevant content
+is searched in its vector store and, when a previous interaction ID is supplied,
+the endpoint loads the session-scoped conversation history. LiteLLM generates
+the answer and its response ID becomes the returned `interaction_id`. Each
+successful user/assistant turn is stored in the configured MongoDB `chat`
+collection as an interaction object with `user` and `system` fields. Each
+interaction record stores its parent ID, allowing branches and multiple chats
+under one session.
+
+Chat requests require `OPENAI_API_KEY`, `MONGODB_URI`,
+`LANGFUSE_PUBLIC_KEY`, and `LANGFUSE_SECRET_KEY`. Configure
+`OPENAI_CHAT_MODEL` for the LiteLLM model. To route through a LiteLLM proxy,
+also configure `LITELLM_PROXY_API_KEY` and `LITELLM_PROXY_API_BASE`.
