@@ -1,0 +1,29 @@
+[project]
+name = "response-api"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "kevit-prit-kanani", email = "prit.kanani@kevit.io" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "beautifulsoup4>=4.15.0",
+    "dotenv>=0.9.9",
+    "fastapi[standard]>=0.143.1",
+    "langfuse>=4.7,<5",
+    "litellm>=1.83.0",
+    "openai>=3.31.0",
+    "python-dotenv>=1.2.4",
+    "requests>=2.34.2",
+    "trafilatura>=2.3.1",
+    "uvicorn>=0.54.0",
+    "zenrows>=1.8.0",
+]
+
+[project.scripts]
+response-api = "response_api:main"
+
+[build-system]
+requires = ["uv_build>=0.12.9,<0.13.0"]
+build-backend = "uv_build"
