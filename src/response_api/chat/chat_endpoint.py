@@ -8,6 +8,7 @@ from pymongo.errors import PyMongoError
 
 from lib.chat.chat_service import answer_chat
 from lib.config.settings import ConfigurationError
+from lib.db.chat_repository import ConversationConflictError
 
 logger = logging.getLogger(__name__)
 
@@ -22,21 +23,21 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     session_id: str
-    interaction_id: str
+    previous_interaction_id: str
     output: str
 
 
 @chat_router.post("", response_model=ChatResponse)
 def chat(request: ChatRequest) -> ChatResponse:
     try:
-        interaction_id, output = answer_chat(
+        conversation_id, output = answer_chat(
             session_id=request.session_id,
             previous_interaction_id=request.previous_interaction_id,
             query=request.query,
         )
         return ChatResponse(
             session_id=request.session_id,
-            interaction_id=interaction_id,
+            previous_interaction_id=conversation_id,
             output=output,
         )
     except LookupError as exc:
@@ -46,6 +47,9 @@ def chat(request: ChatRequest) -> ChatResponse:
             status_code=404,
             detail="previous_interaction_id was not found for this session",
         ) from exc
+    except ConversationConflictError as exc:
+        logger.warning("Concurrent or duplicate chat update rejected: %s", exc)
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ConfigurationError as exc:
         logger.error("Required chat configuration is missing: %s", exc)
         raise HTTPException(status_code=503, detail=str(exc)) from exc

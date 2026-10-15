@@ -7,7 +7,7 @@ from lib.chat.chat_service import answer_chat
 
 
 class ChatServiceTests(unittest.TestCase):
-    def test_answers_with_session_context_and_stores_provider_interaction_id(self) -> None:
+    def test_continuation_returns_conversation_id_and_stores_provider_id(self) -> None:
         settings = Settings(
             openai_api_key="test-openai-key",
             openai_chat_model="gpt-test",
@@ -44,7 +44,10 @@ class ChatServiceTests(unittest.TestCase):
             patch("lib.chat.chat_service.OpenAI", return_value=openai_client),
             patch("lib.chat.chat_service.Langfuse", return_value=langfuse_client),
             patch("lib.chat.chat_service.litellm.completion", return_value=completion) as llm,
-            patch("lib.chat.chat_service.store_interaction") as store,
+            patch(
+                "lib.chat.chat_service.store_interaction",
+                return_value="previous-id",
+            ) as store,
         ):
             interaction_id, output = answer_chat(
                 "session-1",
@@ -52,7 +55,7 @@ class ChatServiceTests(unittest.TestCase):
                 "Current question",
             )
 
-        self.assertEqual(interaction_id, "chatcmpl-provider-id")
+        self.assertEqual(interaction_id, "previous-id")
         self.assertEqual(output, "The answer")
         self.assertNotIn("temperature", llm.call_args.kwargs)
         openai_client.vector_stores.search.assert_called_once_with(
@@ -95,6 +98,7 @@ class ChatServiceTests(unittest.TestCase):
             id="provider-interaction-id",
             choices=[Mock(message=Mock(content="Answer"))],
         )
+        stable_conversation_id = "generated-conversation-id"
 
         with (
             patch("lib.chat.chat_service.get_settings", return_value=settings),
@@ -109,22 +113,25 @@ class ChatServiceTests(unittest.TestCase):
             patch("lib.chat.chat_service.OpenAI", return_value=openai_client),
             patch("lib.chat.chat_service.Langfuse", return_value=langfuse_client),
             patch("lib.chat.chat_service.litellm.completion", return_value=completion) as llm,
-            patch("lib.chat.chat_service.store_interaction") as store,
+            patch(
+                "lib.chat.chat_service.store_interaction",
+                return_value=stable_conversation_id,
+            ) as store,
         ):
             result = answer_chat("session-1", None, "New chat question")
 
-        self.assertEqual(result, ("provider-interaction-id", "Answer"))
-        load_history.assert_called_once_with("session-1", None)
-        self.assertEqual(
-            llm.call_args.kwargs["messages"][-1],
-            {"role": "user", "content": "New chat question"},
-        )
         store.assert_called_once_with(
             session_id="session-1",
             previous_interaction_id=None,
             interaction_id="provider-interaction-id",
             user_message="New chat question",
             system_message="Answer",
+        )
+        self.assertEqual(result, (stable_conversation_id, "Answer"))
+        load_history.assert_called_once_with("session-1", None)
+        self.assertEqual(
+            llm.call_args.kwargs["messages"][-1],
+            {"role": "user", "content": "New chat question"},
         )
 
 

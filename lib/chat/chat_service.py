@@ -3,7 +3,6 @@ from typing import Any
 import litellm
 from langfuse import Langfuse
 from openai import OpenAI
-from pymongo.errors import DuplicateKeyError
 
 from lib.config.settings import Settings, get_settings
 from lib.db.chat_repository import (
@@ -118,16 +117,14 @@ def answer_chat(
                 raise RuntimeError("LiteLLM response did not include an interaction ID")
             generation.update(output=answer)
 
-        store_interaction(
+        conversation_id = store_interaction(
             session_id=session_id,
             previous_interaction_id=previous_interaction_id,
             interaction_id=interaction_id,
             user_message=query,
             system_message=answer,
         )
-        return interaction_id, answer
-    except DuplicateKeyError as exc:
-        raise RuntimeError("The LLM returned a duplicate interaction ID") from exc
+        return conversation_id, answer
     finally:
         langfuse_client.flush()
         openai_client.close()

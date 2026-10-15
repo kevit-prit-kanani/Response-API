@@ -2,9 +2,11 @@ import logging
 from datetime import UTC, datetime
 from functools import lru_cache
 from typing import TypedDict
+from uuid import uuid4
 
 from pymongo import ASCENDING, MongoClient
 from pymongo.collection import Collection
+from pymongo.errors import DuplicateKeyError
 
 from lib.config.settings import get_settings
 
@@ -16,6 +18,10 @@ class Interaction(TypedDict):
     system: str
 
 
+class ConversationConflictError(RuntimeError):
+    pass
+
+
 @lru_cache
 def _get_chat_collection() -> Collection:
     settings = get_settings()
@@ -24,6 +30,9 @@ def _get_chat_collection() -> Collection:
     collection.create_index(
         [("session_id", ASCENDING), ("interaction_id", ASCENDING)],
         unique=True,
+    )
+    collection.create_index(
+        [("session_id", ASCENDING), ("previous_interaction_id", ASCENDING)]
     )
     return collection
 
@@ -55,39 +64,36 @@ def get_interaction_history(
         return []
 
     collection = _get_chat_collection()
-    interaction_id: str | None = previous_interaction_id
-    visited: set[str] = set()
-    history: list[Interaction] = []
-
-    while interaction_id is not None:
-        if interaction_id in visited:
-            raise RuntimeError("Chat interaction history contains a cycle")
-        visited.add(interaction_id)
-        document = collection.find_one(
-            {"session_id": session_id, "interaction_id": interaction_id}
+    document = collection.find_one(
+        {
+            "session_id": session_id,
+            "previous_interaction_id": previous_interaction_id,
+        }
+    )
+    if document is None:
+        raise KeyError(previous_interaction_id)
+    interactions = document.get("interactions")
+    if not isinstance(interactions, list):
+        raise RuntimeError(
+            f"Chat interaction {previous_interaction_id} has invalid history"
         )
-        if document is None:
-            raise KeyError(previous_interaction_id)
-        interactions = document.get("interactions")
-        if not isinstance(interactions, list):
-            raise RuntimeError(f"Chat interaction {interaction_id} has invalid history")
-        for interaction in interactions:
-            if (
-                not isinstance(interaction, dict)
-                or not isinstance(interaction.get("user"), str)
-                or not isinstance(interaction.get("system"), str)
-            ):
-                raise RuntimeError(f"Chat interaction {interaction_id} has invalid history")
-            history.append(
-                {
-                    "user": interaction["user"],
-                    "system": interaction["system"],
-                }
-            )
-        parent_id = document.get("previous_interaction_id")
-        interaction_id = parent_id if isinstance(parent_id, str) else None
 
-    history.reverse()
+    history: list[Interaction] = []
+    for interaction in interactions:
+        if (
+            not isinstance(interaction, dict)
+            or not isinstance(interaction.get("user"), str)
+            or not isinstance(interaction.get("system"), str)
+        ):
+            raise RuntimeError(
+                f"Chat interaction {previous_interaction_id} has invalid history"
+            )
+        history.append(
+            {
+                "user": interaction["user"],
+                "system": interaction["system"],
+            }
+        )
     return history
 
 
@@ -97,17 +103,71 @@ def store_interaction(
     interaction_id: str,
     user_message: str,
     system_message: str,
-) -> None:
-    document = {
-        "session_id": session_id,
-        "previous_interaction_id": previous_interaction_id,
-        "interaction_id": interaction_id,
-        "interactions": [{"user": user_message, "system": system_message}],
-        "created_at": datetime.now(UTC),
-    }
-    _get_chat_collection().insert_one(document)
+) -> str:
+    collection = _get_chat_collection()
+    interaction = {"user": user_message, "system": system_message}
+
+    if previous_interaction_id is None:
+        conversation_id = str(uuid4())
+        document = {
+            "session_id": session_id,
+            "previous_interaction_id": conversation_id,
+            "interaction_id": interaction_id,
+            "interactions": [interaction],
+            "created_at": datetime.now(UTC),
+        }
+        try:
+            collection.insert_one(document)
+        except DuplicateKeyError as exc:
+            raise ConversationConflictError(
+                "The LLM returned an interaction ID already used in this session"
+            ) from exc
+    else:
+        current = collection.find_one(
+            {
+                "session_id": session_id,
+                "previous_interaction_id": previous_interaction_id,
+            },
+            {"_id": 1, "interaction_id": 1},
+        )
+        if current is None:
+            raise KeyError(previous_interaction_id)
+        conversation_id = previous_interaction_id
+
+        latest_interaction_id = current.get("interaction_id")
+        if not isinstance(latest_interaction_id, str) or not latest_interaction_id:
+            raise RuntimeError(
+                f"Conversation {previous_interaction_id} has no latest interaction ID"
+            )
+
+        try:
+            result = collection.update_one(
+                {
+                    "_id": current["_id"],
+                    "session_id": session_id,
+                    "previous_interaction_id": previous_interaction_id,
+                    "interaction_id": latest_interaction_id,
+                },
+                {
+                    "$set": {
+                        "interaction_id": interaction_id,
+                    },
+                    "$push": {"interactions": interaction},
+                },
+            )
+        except DuplicateKeyError as exc:
+            raise ConversationConflictError(
+                "The LLM returned an interaction ID already used in this session"
+            ) from exc
+        if result.matched_count != 1:
+            raise ConversationConflictError(
+                "This conversation has already advanced; retry with its latest interaction ID"
+            )
+
     logger.info(
-        "Stored chat interaction %s for session %s",
+        "Stored chat turn %s in conversation %s for session %s",
         interaction_id,
+        conversation_id,
         session_id,
     )
+    return conversation_id
