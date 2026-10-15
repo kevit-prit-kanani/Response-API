@@ -42,6 +42,8 @@ class Settings(BaseSettings):
         alias="LITELLM_PROXY_API_KEY",
     )
 
+    zenrows_api_key: str | None = Field(default=None, alias="ZENROWS_API_KEY")
+
     def require_openai(self) -> str:
         if not self.openai_api_key:
             raise RuntimeError("OPENAI_API_KEY is not configured")
