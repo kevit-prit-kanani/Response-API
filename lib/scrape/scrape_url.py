@@ -2,6 +2,7 @@ import logging
 import re
 from collections import deque
 from dataclasses import dataclass
+from typing import Any
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import requests
@@ -20,7 +21,16 @@ from lib.db.ingect_to_vector_store import (
 logger = logging.getLogger(__name__)
 
 MAX_CRAWL_DEPTH = 2
+MAX_LINKS_PER_PAGE = 2
+MAX_PAGES_PER_CRAWL = 20
 _MARKDOWN_LINK = re.compile(r"""!?\[[^\]]*\]\(\s*(?:<([^>]+)>|([^\s)]+))""")
+_SENSITIVE_PARAMETER = re.compile(
+    r"""(?i)(apikey|api_key|token|secret)(\s*[:=]\s*)([^&\s,}"']+)"""
+)
+
+
+class ZenRowsError(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -72,13 +82,57 @@ def _markdown_links(markdown: str, page_url: str) -> list[str]:
     return links
 
 
+def _same_origin_links_to_crawl(
+    markdown: str,
+    page_url: str,
+    start_origin: tuple[str, str, int],
+    known_urls: set[str],
+) -> list[str]:
+    selected: list[str] = []
+    selected_urls: set[str] = set()
+    for linked_url in _markdown_links(markdown, page_url):
+        if (
+            _origin(linked_url) != start_origin
+            or linked_url in known_urls
+            or linked_url in selected_urls
+        ):
+            continue
+        selected.append(linked_url)
+        selected_urls.add(linked_url)
+        if len(selected) == MAX_LINKS_PER_PAGE:
+            break
+    return selected
+
+
 def _fetch_markdown(client: ZenRowsClient, url: str) -> str:
-    response = client.fetch(
-        url,
-        params={"response_type": "markdown"},
-        timeout=90,
-    )
-    response.raise_for_status()
+    try:
+        response = client.fetch(
+            url,
+            params={"response_type": "markdown"},
+            timeout=90,
+        )
+    except requests.RequestException as exc:
+        error_type = type(exc).__name__
+        raise ZenRowsError(
+            f"ZenRows request failed before receiving a response ({error_type})."
+        ) from None
+
+    if not response.ok:
+        try:
+            payload: Any = response.json()
+        except ValueError:
+            payload = response.text
+        detail: Any = payload
+        if isinstance(payload, dict):
+            detail = payload.get("error") or payload.get("message") or payload
+        if not isinstance(detail, str):
+            detail = str(detail)
+        detail = _SENSITIVE_PARAMETER.sub(r"\1\2[REDACTED]", detail)
+        detail = detail[:500]
+        raise ZenRowsError(
+            f"ZenRows returned HTTP {response.status_code}: {detail}"
+        ) from None
+
     return response.text
 
 
@@ -96,24 +150,20 @@ def scrape_url(url: str, session_id: str | None = None) -> ScrapeSummary:
             session.vector_store_id,
             openai_client,
         )
-        visited: set[str] = set()
+        enqueued: set[str] = {start_url}
         pending = deque([(start_url, 0)])
         pages_scraped = 0
         pages_uploaded = 0
         pages_skipped = 0
         start_origin = _origin(start_url)
 
-        while pending:
+        while pending and pages_scraped < MAX_PAGES_PER_CRAWL:
             page_url, depth = pending.popleft()
-            if page_url in visited:
-                continue
-            visited.add(page_url)
-
             page_hash = source_url_hash(page_url)
             try:
                 markdown = _fetch_markdown(zenrows_client, page_url)
-            except requests.RequestException:
-                logger.exception("ZenRows failed for source hash %s", page_hash)
+            except ZenRowsError as exc:
+                logger.error("ZenRows failed for source hash %s: %s", page_hash, exc)
                 raise
             pages_scraped += 1
 
@@ -136,9 +186,22 @@ def scrape_url(url: str, session_id: str | None = None) -> ScrapeSummary:
                 )
 
             if depth < MAX_CRAWL_DEPTH:
-                for linked_url in _markdown_links(markdown, page_url):
-                    if _origin(linked_url) == start_origin and linked_url not in visited:
-                        pending.append((linked_url, depth + 1))
+                for linked_url in _same_origin_links_to_crawl(
+                    markdown,
+                    page_url,
+                    start_origin,
+                    enqueued,
+                ):
+                    enqueued.add(linked_url)
+                    pending.append((linked_url, depth + 1))
+
+        if pending:
+            logger.warning(
+                "Stopped crawl for session %s at page limit %d; %d pages remain queued",
+                session.session_id,
+                MAX_PAGES_PER_CRAWL,
+                len(pending),
+            )
 
         logger.info(
             "Completed crawl for session %s: scraped=%d uploaded=%d skipped=%d",

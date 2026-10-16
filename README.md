@@ -7,7 +7,8 @@ and MongoDB stores session/vector-store mappings and conversation histories.
 
 ## Features
 
-- Crawl a submitted URL and follow same-origin Markdown links up to two levels.
+- Crawl a submitted URL to depth two, following at most two same-origin links
+  from each page and scraping no more than 20 pages per request.
 - Reuse one OpenAI vector store for each chat session.
 - Avoid adding the same page URL to a session's vector store more than once.
 - Retrieve relevant vector-store content and provide it to LiteLLM as chat
