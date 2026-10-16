@@ -1,9 +1,12 @@
 import unittest
+from datetime import UTC, datetime
 from unittest.mock import Mock, patch
 
 from lib.db.chat_repository import (
     ConversationConflictError,
+    get_chat_conversation,
     get_interaction_history,
+    list_chat_ids,
     store_interaction,
 )
 
@@ -167,6 +170,87 @@ class ChatRepositoryTests(unittest.TestCase):
 
     def test_new_chat_starts_with_empty_history(self) -> None:
         self.assertEqual(get_interaction_history("session-1", None), [])
+
+    def test_lists_session_and_conversation_ids(self) -> None:
+        collection = Mock()
+        cursor = collection.find.return_value.sort.return_value
+        cursor.__iter__ = Mock(
+            return_value=iter(
+                [
+                    {
+                        "session_id": "session-1",
+                        "previous_interaction_id": "conversation-1",
+                    },
+                    {
+                        "session_id": "session-1",
+                        "previous_interaction_id": "conversation-2",
+                    },
+                ]
+            )
+        )
+
+        with patch(
+            "lib.db.chat_repository._get_chat_collection",
+            return_value=collection,
+        ):
+            chat_ids = list_chat_ids()
+
+        self.assertEqual(
+            chat_ids,
+            [
+                {
+                    "session_id": "session-1",
+                    "previous_interaction_id": "conversation-1",
+                },
+                {
+                    "session_id": "session-1",
+                    "previous_interaction_id": "conversation-2",
+                },
+            ],
+        )
+        collection.find.assert_called_once_with(
+            {},
+            {"_id": 0, "session_id": 1, "previous_interaction_id": 1},
+        )
+
+    def test_gets_conversation_by_session_and_stable_conversation_id(self) -> None:
+        created_at = datetime(2026, 10, 16, tzinfo=UTC)
+        collection = Mock()
+        collection.find_one.return_value = {
+            "session_id": "session-1",
+            "previous_interaction_id": "conversation-1",
+            "interactions": [{"user": "hello", "system": "Hi"}],
+            "created_at": created_at,
+        }
+
+        with patch(
+            "lib.db.chat_repository._get_chat_collection",
+            return_value=collection,
+        ):
+            conversation = get_chat_conversation("session-1", "conversation-1")
+
+        self.assertEqual(
+            conversation,
+            {
+                "session_id": "session-1",
+                "previous_interaction_id": "conversation-1",
+                "interactions": [{"user": "hello", "system": "Hi"}],
+                "created_at": created_at,
+            },
+        )
+        collection.find_one.assert_called_once_with(
+            {
+                "session_id": "session-1",
+                "previous_interaction_id": "conversation-1",
+            },
+            {
+                "_id": 0,
+                "session_id": 1,
+                "previous_interaction_id": 1,
+                "interactions": 1,
+                "created_at": 1,
+            },
+        )
 
 
 if __name__ == "__main__":

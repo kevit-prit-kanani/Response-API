@@ -1,4 +1,5 @@
 import unittest
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -8,6 +9,83 @@ from lib.db.chat_repository import ConversationConflictError
 
 
 class ChatEndpointTests(unittest.TestCase):
+    def test_chat_ids_endpoint_returns_session_conversation_pairs(self) -> None:
+        with patch(
+            "response_api.chat.chat_endpoint.list_chat_ids",
+            return_value=[
+                {
+                    "session_id": "session-1",
+                    "previous_interaction_id": "conversation-1",
+                },
+                {
+                    "session_id": "session-1",
+                    "previous_interaction_id": "conversation-2",
+                },
+            ],
+        ):
+            response = TestClient(main).get("/chat/ids")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            [
+                {
+                    "session_id": "session-1",
+                    "previous_interaction_id": "conversation-1",
+                },
+                {
+                    "session_id": "session-1",
+                    "previous_interaction_id": "conversation-2",
+                },
+            ],
+        )
+
+    def test_get_chat_endpoint_returns_conversation_fields(self) -> None:
+        created_at = datetime(2026, 10, 16, tzinfo=UTC)
+        with patch(
+            "response_api.chat.chat_endpoint.get_chat_conversation",
+            return_value={
+                "session_id": "session-1",
+                "previous_interaction_id": "conversation-1",
+                "interactions": [{"user": "hello", "system": "Hi"}],
+                "created_at": created_at,
+            },
+        ) as get_conversation:
+            response = TestClient(main).get(
+                "/chat/conversation",
+                params={
+                    "session_id": "session-1",
+                    "previous_interaction_id": "conversation-1",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "session_id": "session-1",
+                "previous_interaction_id": "conversation-1",
+                "interactions": [{"user": "hello", "system": "Hi"}],
+                "created_at": "2026-10-16T00:00:00Z",
+            },
+        )
+        get_conversation.assert_called_once_with("session-1", "conversation-1")
+
+    def test_get_chat_endpoint_returns_not_found_for_unknown_pair(self) -> None:
+        with patch(
+            "response_api.chat.chat_endpoint.get_chat_conversation",
+            return_value=None,
+        ):
+            response = TestClient(main).get(
+                "/chat/conversation",
+                params={
+                    "session_id": "session-1",
+                    "previous_interaction_id": "unknown",
+                },
+            )
+
+        self.assertEqual(response.status_code, 404)
+
     def test_chat_endpoint_returns_conversation_id_as_previous_interaction_id(self) -> None:
         with patch(
             "response_api.chat.chat_endpoint.answer_chat",

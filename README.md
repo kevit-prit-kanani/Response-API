@@ -22,9 +22,10 @@ optional and default to `RAG_assessment` and `sessions`.
 and `query`. The `session_id` must refer to a scraped session. Relevant content
 is searched in its vector store and, when a previous interaction ID is supplied,
 the endpoint loads the session-scoped conversation history. LiteLLM generates
-the answer and its response ID becomes the returned `previous_interaction_id`
-for the next request. Each
-successful user/assistant turn is stored in the configured MongoDB `chat`
+the answer and its response ID is stored as the document's latest
+`interaction_id`. The stable conversation ID is returned as
+`previous_interaction_id` and reused on subsequent requests. Each successful
+user/assistant turn is stored in the configured MongoDB `chat`
 collection as an interaction object with `user` and `system` fields. Each
 conversation is stored as one document. Its `interaction_id` is replaced with
 the latest LiteLLM response ID as each turn is appended. The
@@ -35,3 +36,7 @@ Chat requests require `OPENAI_API_KEY`, `MONGODB_URI`,
 `LANGFUSE_PUBLIC_KEY`, and `LANGFUSE_SECRET_KEY`. Configure
 `OPENAI_CHAT_MODEL` for the LiteLLM model. To route through a LiteLLM proxy,
 also configure `LITELLM_PROXY_API_KEY` and `LITELLM_PROXY_API_BASE`.
+
+`GET /chat/ids` lists session/conversation ID pairs from the `chat` collection.
+`GET /chat/conversation?session_id=...&previous_interaction_id=...` returns the
+matching conversation's IDs, interaction history, and creation timestamp.

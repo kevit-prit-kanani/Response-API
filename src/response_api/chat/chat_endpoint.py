@@ -1,6 +1,7 @@
 import logging
+from datetime import datetime
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from litellm.exceptions import APIError
 from openai import OpenAIError
 from pydantic import BaseModel, Field
@@ -8,7 +9,12 @@ from pymongo.errors import PyMongoError
 
 from lib.chat.chat_service import answer_chat
 from lib.config.settings import ConfigurationError
-from lib.db.chat_repository import ConversationConflictError
+from lib.db.chat_repository import (
+    ChatId,
+    ConversationConflictError,
+    get_chat_conversation,
+    list_chat_ids,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +31,50 @@ class ChatResponse(BaseModel):
     session_id: str
     previous_interaction_id: str
     output: str
+
+
+class ChatIdResponse(BaseModel):
+    session_id: str
+    previous_interaction_id: str | None
+
+
+class ChatConversationResponse(ChatIdResponse):
+    interactions: list[dict[str, str]]
+    created_at: datetime
+
+
+@chat_router.get("/ids", response_model=list[ChatIdResponse])
+def get_chat_ids() -> list[ChatId]:
+    try:
+        return list_chat_ids()
+    except ConfigurationError as exc:
+        logger.error("Required chat configuration is missing: %s", exc)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except PyMongoError as exc:
+        logger.exception("MongoDB chat listing failed")
+        raise HTTPException(
+            status_code=503, detail="Chat storage is unavailable"
+        ) from exc
+
+
+@chat_router.get("/conversation", response_model=ChatConversationResponse)
+def get_chat(
+    session_id: str = Query(min_length=1, max_length=128),
+    previous_interaction_id: str = Query(min_length=1),
+) -> ChatConversationResponse:
+    try:
+        conversation = get_chat_conversation(session_id, previous_interaction_id)
+    except ConfigurationError as exc:
+        logger.error("Required chat configuration is missing: %s", exc)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except PyMongoError as exc:
+        logger.exception("MongoDB chat lookup failed")
+        raise HTTPException(
+            status_code=503, detail="Chat storage is unavailable"
+        ) from exc
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Chat conversation was not found")
+    return ChatConversationResponse(**conversation)
 
 
 @chat_router.post("", response_model=ChatResponse)

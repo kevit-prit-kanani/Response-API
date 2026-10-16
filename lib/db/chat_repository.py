@@ -18,6 +18,18 @@ class Interaction(TypedDict):
     system: str
 
 
+class ChatId(TypedDict):
+    session_id: str
+    previous_interaction_id: str | None
+
+
+class ChatConversation(TypedDict):
+    session_id: str
+    previous_interaction_id: str | None
+    interactions: list[Interaction]
+    created_at: datetime
+
+
 class ConversationConflictError(RuntimeError):
     pass
 
@@ -54,6 +66,47 @@ def get_session_vector_store_id(session_id: str) -> str | None:
     if not isinstance(vector_store_id, str) or not vector_store_id:
         raise RuntimeError(f"Session {session_id} has no vector store mapping")
     return vector_store_id
+
+
+def list_chat_ids() -> list[ChatId]:
+    documents = _get_chat_collection().find(
+        {},
+        {"_id": 0, "session_id": 1, "previous_interaction_id": 1},
+    ).sort("created_at", ASCENDING)
+    return [
+        {
+            "session_id": document["session_id"],
+            "previous_interaction_id": document.get("previous_interaction_id"),
+        }
+        for document in documents
+    ]
+
+
+def get_chat_conversation(
+    session_id: str,
+    previous_interaction_id: str,
+) -> ChatConversation | None:
+    document = _get_chat_collection().find_one(
+        {
+            "session_id": session_id,
+            "previous_interaction_id": previous_interaction_id,
+        },
+        {
+            "_id": 0,
+            "session_id": 1,
+            "previous_interaction_id": 1,
+            "interactions": 1,
+            "created_at": 1,
+        },
+    )
+    if document is None:
+        return None
+    return {
+        "session_id": document["session_id"],
+        "previous_interaction_id": document.get("previous_interaction_id"),
+        "interactions": document["interactions"],
+        "created_at": document["created_at"],
+    }
 
 
 def get_interaction_history(
