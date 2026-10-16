@@ -5,42 +5,46 @@ from unittest.mock import Mock, patch
 from lib.db.chat_repository import (
     ConversationConflictError,
     get_chat_conversation,
-    get_interaction_history,
+    get_latest_response_id,
     list_chat_ids,
     store_interaction,
 )
 
 
 class ChatRepositoryTests(unittest.TestCase):
-    def test_loads_ordered_turns_from_current_conversation_document(self) -> None:
+    def test_gets_latest_provider_response_id_without_loading_history(self) -> None:
         collection = Mock()
         collection.find_one.return_value = {
-            "session_id": "session-1",
-            "interaction_id": "interaction-2",
-            "previous_interaction_id": "conversation-root",
-            "interactions": [
-                {"user": "First question", "system": "First answer"},
-                {"user": "Second question", "system": "Second answer"},
-            ],
+            "interaction_id": "resp_latest",
         }
 
         with patch(
             "lib.db.chat_repository._get_chat_collection",
             return_value=collection,
         ):
-            history = get_interaction_history("session-1", "conversation-root")
+            interaction_id = get_latest_response_id("session-1", "conversation-root")
 
-        self.assertEqual(
-            history,
-            [
-                {"user": "First question", "system": "First answer"},
-                {"user": "Second question", "system": "Second answer"},
-            ],
-        )
+        self.assertEqual(interaction_id, "resp_latest")
         collection.find_one.assert_called_once_with({
             "session_id": "session-1",
             "previous_interaction_id": "conversation-root",
-        })
+        }, {"_id": 0, "interaction_id": 1})
+
+    def test_rejects_legacy_chat_completion_id_for_responses_continuation(self) -> None:
+        collection = Mock()
+        collection.find_one.return_value = {"interaction_id": "chatcmpl-legacy"}
+
+        with (
+            patch(
+                "lib.db.chat_repository._get_chat_collection",
+                return_value=collection,
+            ),
+            self.assertRaisesRegex(
+                ConversationConflictError,
+                "Start a new conversation",
+            ),
+        ):
+            get_latest_response_id("session-1", "conversation-root")
 
     def test_new_conversation_inserts_one_document_with_generated_root_id(self) -> None:
         collection = Mock()
@@ -54,6 +58,7 @@ class ChatRepositoryTests(unittest.TestCase):
                 "response-id-1",
                 "question one",
                 "answer one",
+                expected_previous_response_id=None,
             )
 
         stored = collection.insert_one.call_args.args[0]
@@ -88,12 +93,12 @@ class ChatRepositoryTests(unittest.TestCase):
                 "response-id-2",
                 "question two",
                 "answer two",
+                expected_previous_response_id="response-id-1",
             )
 
         collection.insert_one.assert_not_called()
         collection.update_one.assert_called_once_with(
             {
-                "_id": "document-id",
                 "session_id": "session-1",
                 "previous_interaction_id": "conversation-root",
                 "interaction_id": "response-id-1",
@@ -134,6 +139,7 @@ class ChatRepositoryTests(unittest.TestCase):
                 "new-response-id",
                 "question",
                 "answer",
+                expected_previous_response_id="response-id-1",
             )
 
     def test_followup_returns_conversation_id_and_uses_latest_llm_id(self) -> None:
@@ -154,6 +160,7 @@ class ChatRepositoryTests(unittest.TestCase):
                 "new-response-id",
                 "next question",
                 "next answer",
+                expected_previous_response_id="legacy-response-id",
             )
 
         self.assertEqual(conversation_id, "legacy-conversation-id")
@@ -167,9 +174,6 @@ class ChatRepositoryTests(unittest.TestCase):
         self.assertEqual(query["session_id"], "session-1")
         self.assertEqual(query["previous_interaction_id"], "legacy-conversation-id")
         self.assertEqual(query["interaction_id"], "legacy-response-id")
-
-    def test_new_chat_starts_with_empty_history(self) -> None:
-        self.assertEqual(get_interaction_history("session-1", None), [])
 
     def test_lists_session_and_conversation_ids(self) -> None:
         collection = Mock()

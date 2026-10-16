@@ -2,8 +2,9 @@
 
 FastAPI service for crawling websites with ZenRows, adding the resulting
 Markdown pages to an OpenAI vector store, and chatting over the retrieved
-website content. LiteLLM handles chat completions, Langfuse traces generations,
-and MongoDB stores session/vector-store mappings and conversation histories.
+website content. LiteLLM's Responses API continues conversations by provider
+response ID, Langfuse traces generations, and MongoDB stores
+session/vector-store mappings and conversation histories.
 
 ## Features
 
@@ -224,10 +225,15 @@ Success response (`200`):
 }
 ```
 
-The API looks up conversation history by `session_id` and the stable
-`previous_interaction_id`, retrieves relevant content from that session's
-vector store, and sends both the history and retrieved content to LiteLLM. The
-latest LiteLLM response ID is maintained internally in the chat document.
+The API looks up the latest provider response ID using `session_id` and the
+stable `previous_interaction_id`, retrieves relevant content from that
+session's vector store, and sends only the new query and retrieved context to
+LiteLLM with that provider ID. LiteLLM continues the server-side response
+chain; the API appends the new user/assistant pair and stores the returned
+provider response ID in the existing MongoDB conversation document. Full
+history remains available from `GET /chat/conversation` but is not resent to
+the model. Conversations created with legacy Chat Completions IDs cannot be
+resumed through Responses; start a new conversation for those.
 
 Returns `404` if the session or conversation is unknown, `409` if a concurrent
 request advanced the conversation, `503` for missing configuration or MongoDB

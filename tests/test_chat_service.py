@@ -1,22 +1,13 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
+from lib.chat.chat_service import SYSTEM_PROMPT, answer_chat
 from lib.config.settings import Settings
-from lib.db.chat_repository import Interaction
-from lib.chat.chat_service import answer_chat
 
 
 class ChatServiceTests(unittest.TestCase):
-    def test_continuation_returns_conversation_id_and_stores_provider_id(self) -> None:
-        settings = Settings(
-            openai_api_key="test-openai-key",
-            openai_chat_model="gpt-test",
-            langfuse_public_key="test-public",
-            langfuse_secret_key="test-secret",
-        )
-        previous_history: list[Interaction] = [
-            {"user": "Earlier question", "system": "Earlier answer"}
-        ]
+    def _setup_clients(self) -> tuple[Mock, Mock]:
         openai_client = Mock()
         openai_client.vector_stores.search.return_value.data = [
             Mock(content=[Mock(text="Relevant website text")])
@@ -26,9 +17,24 @@ class ChatServiceTests(unittest.TestCase):
         observation_context = MagicMock()
         observation_context.__enter__.return_value = observation
         langfuse_client.start_as_current_observation.return_value = observation_context
-        completion = Mock(
-            id="chatcmpl-provider-id",
-            choices=[Mock(message=Mock(content="The answer"))],
+        return openai_client, langfuse_client
+
+    def test_continuation_uses_stored_response_id_without_loading_history(self) -> None:
+        settings = Settings(
+            openai_api_key="test-openai-key",
+            openai_chat_model="gpt-test",
+            langfuse_public_key="test-public",
+            langfuse_secret_key="test-secret",
+        )
+        openai_client, langfuse_client = self._setup_clients()
+        response = SimpleNamespace(
+            id="resp-provider-id",
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    content=[SimpleNamespace(type="output_text", text="The answer")],
+                )
+            ],
         )
 
         with (
@@ -38,66 +44,64 @@ class ChatServiceTests(unittest.TestCase):
                 return_value="vs-session",
             ),
             patch(
-                "lib.chat.chat_service.get_interaction_history",
-                return_value=previous_history,
-            ),
+                "lib.chat.chat_service.get_latest_response_id",
+                return_value="resp-previous-id",
+            ) as get_latest,
             patch("lib.chat.chat_service.OpenAI", return_value=openai_client),
             patch("lib.chat.chat_service.Langfuse", return_value=langfuse_client),
-            patch("lib.chat.chat_service.litellm.completion", return_value=completion) as llm,
+            patch("lib.chat.chat_service.litellm.responses", return_value=response) as llm,
             patch(
                 "lib.chat.chat_service.store_interaction",
                 return_value="previous-id",
             ) as store,
         ):
-            interaction_id, output = answer_chat(
+            conversation_id, output = answer_chat(
                 "session-1",
                 "previous-id",
                 "Current question",
             )
 
-        self.assertEqual(interaction_id, "previous-id")
+        self.assertEqual(conversation_id, "previous-id")
         self.assertEqual(output, "The answer")
-        self.assertNotIn("temperature", llm.call_args.kwargs)
+        get_latest.assert_called_once_with("session-1", "previous-id")
         openai_client.vector_stores.search.assert_called_once_with(
             vector_store_id="vs-session",
             query="Current question",
             max_num_results=5,
         )
-        messages = llm.call_args.kwargs["messages"]
-        self.assertEqual(messages[1], {"role": "user", "content": "Earlier question"})
-        self.assertEqual(
-            messages[2],
-            {"role": "assistant", "content": "Earlier answer"},
-        )
-        self.assertIn("Relevant website text", messages[-1]["content"])
-        self.assertIn("Current question", messages[-1]["content"])
+        llm.assert_called_once()
+        request = llm.call_args.kwargs
+        self.assertEqual(request["previous_response_id"], "resp-previous-id")
+        self.assertEqual(request["input"].splitlines()[-1], "Current question")
+        self.assertIn("Relevant website text", request["input"])
+        self.assertEqual(request["instructions"], SYSTEM_PROMPT)
+        self.assertTrue(request["store"])
+        self.assertNotIn("messages", request)
         store.assert_called_once_with(
             session_id="session-1",
             previous_interaction_id="previous-id",
-            interaction_id="chatcmpl-provider-id",
+            interaction_id="resp-provider-id",
             user_message="Current question",
             system_message="The answer",
+            expected_previous_response_id="resp-previous-id",
+        )
+        langfuse_client.start_as_current_observation.assert_called_once()
+        observation = (
+            langfuse_client.start_as_current_observation.return_value.__enter__.return_value
         )
         observation.update.assert_called_once_with(output="The answer")
         langfuse_client.flush.assert_called_once()
         openai_client.close.assert_called_once()
 
-    def test_new_chat_has_no_previous_interaction_context(self) -> None:
+    def test_new_chat_starts_response_chain_without_previous_response_id(self) -> None:
         settings = Settings(
             openai_api_key="test-openai-key",
             langfuse_public_key="test-public",
             langfuse_secret_key="test-secret",
         )
-        openai_client = Mock()
+        openai_client, langfuse_client = self._setup_clients()
         openai_client.vector_stores.search.return_value.data = []
-        langfuse_client = Mock()
-        observation_context = MagicMock()
-        observation_context.__enter__.return_value = Mock()
-        langfuse_client.start_as_current_observation.return_value = observation_context
-        completion = Mock(
-            id="provider-interaction-id",
-            choices=[Mock(message=Mock(content="Answer"))],
-        )
+        response = SimpleNamespace(id="resp-new-id", output_text="Answer")
         stable_conversation_id = "generated-conversation-id"
 
         with (
@@ -106,13 +110,9 @@ class ChatServiceTests(unittest.TestCase):
                 "lib.chat.chat_service.get_session_vector_store_id",
                 return_value="vs-session",
             ),
-            patch(
-                "lib.chat.chat_service.get_interaction_history",
-                return_value=[],
-            ) as load_history,
             patch("lib.chat.chat_service.OpenAI", return_value=openai_client),
             patch("lib.chat.chat_service.Langfuse", return_value=langfuse_client),
-            patch("lib.chat.chat_service.litellm.completion", return_value=completion) as llm,
+            patch("lib.chat.chat_service.litellm.responses", return_value=response) as llm,
             patch(
                 "lib.chat.chat_service.store_interaction",
                 return_value=stable_conversation_id,
@@ -120,18 +120,19 @@ class ChatServiceTests(unittest.TestCase):
         ):
             result = answer_chat("session-1", None, "New chat question")
 
+        self.assertEqual(result, (stable_conversation_id, "Answer"))
+        self.assertEqual(
+            llm.call_args.kwargs["input"],
+            "New chat question",
+        )
+        self.assertNotIn("previous_response_id", llm.call_args.kwargs)
         store.assert_called_once_with(
             session_id="session-1",
             previous_interaction_id=None,
-            interaction_id="provider-interaction-id",
+            interaction_id="resp-new-id",
             user_message="New chat question",
             system_message="Answer",
-        )
-        self.assertEqual(result, (stable_conversation_id, "Answer"))
-        load_history.assert_called_once_with("session-1", None)
-        self.assertEqual(
-            llm.call_args.kwargs["messages"][-1],
-            {"role": "user", "content": "New chat question"},
+            expected_previous_response_id=None,
         )
 
 

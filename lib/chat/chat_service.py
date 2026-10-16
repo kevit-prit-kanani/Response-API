@@ -6,8 +6,7 @@ from openai import OpenAI
 
 from lib.config.settings import Settings, get_settings
 from lib.db.chat_repository import (
-    Interaction,
-    get_interaction_history,
+    get_latest_response_id,
     get_session_vector_store_id,
     store_interaction,
 )
@@ -34,27 +33,13 @@ def _extract_context(vector_store_id: str, query: str, client: OpenAI) -> str:
     return "\n\n".join(excerpts)
 
 
-def _build_messages(
-    query: str,
-    history: list[Interaction],
-    retrieved_context: str,
-) -> list[dict[str, str]]:
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    for interaction in history:
-        messages.append({"role": "user", "content": interaction["user"]})
-        messages.append({"role": "assistant", "content": interaction["system"]})
-
-    if retrieved_context:
-        current_message = (
-            f"Relevant website context:\n{retrieved_context}\n\nUser question:\n{query}"
-        )
-    else:
-        current_message = query
-    messages.append({"role": "user", "content": current_message})
-    return messages
+def _build_input(query: str, retrieved_context: str) -> str:
+    if not retrieved_context:
+        return query
+    return f"Relevant website context:\n{retrieved_context}\n\nUser question:\n{query}"
 
 
-def _completion_options(settings: Settings) -> dict[str, Any]:
+def _responses_options(settings: Settings) -> dict[str, Any]:
     if settings.litellm_proxy_api_key:
         return {
             "model": settings.openai_chat_model,
@@ -65,6 +50,22 @@ def _completion_options(settings: Settings) -> dict[str, Any]:
         "model": f"openai/{settings.openai_chat_model}",
         "api_key": settings.require_openai(),
     }
+
+
+def _extract_response_text(response: Any) -> str:
+    output_text = getattr(response, "output_text", None)
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text.strip()
+
+    excerpts: list[str] = []
+    for item in getattr(response, "output", []) or []:
+        if getattr(item, "type", None) != "message":
+            continue
+        for content in getattr(item, "content", []) or []:
+            text = getattr(content, "text", None)
+            if getattr(content, "type", None) == "output_text" and isinstance(text, str):
+                excerpts.append(text)
+    return "\n".join(excerpts).strip()
 
 
 def answer_chat(
@@ -78,7 +79,11 @@ def answer_chat(
     if vector_store_id is None:
         raise LookupError(f"Session {session_id} was not found")
 
-    history = get_interaction_history(session_id, previous_interaction_id)
+    previous_response_id = (
+        get_latest_response_id(session_id, previous_interaction_id)
+        if previous_interaction_id is not None
+        else None
+    )
     openai_client = OpenAI(api_key=settings.require_openai())
     langfuse_client = Langfuse(
         public_key=langfuse_public_key,
@@ -88,12 +93,21 @@ def answer_chat(
 
     try:
         retrieved_context = _extract_context(vector_store_id, query, openai_client)
-        messages = _build_messages(query, history, retrieved_context)
-        model_options = _completion_options(settings)
+        current_input = _build_input(query, retrieved_context)
+        model_options = _responses_options(settings)
+        response_options: dict[str, Any] = {
+            **model_options,
+            "input": current_input,
+            "instructions": SYSTEM_PROMPT,
+            "store": True,
+        }
+        if previous_response_id is not None:
+            response_options["previous_response_id"] = previous_response_id
+
         with langfuse_client.start_as_current_observation(
             as_type="generation",
-            name="chat-completion",
-            input=messages,
+            name="chat-response",
+            input=current_input,
             model=model_options["model"],
             metadata={
                 "session_id": session_id,
@@ -101,17 +115,10 @@ def answer_chat(
                 "vector_store_id": vector_store_id,
             },
         ) as generation:
-            response = litellm.completion(
-                **model_options,
-                messages=messages,
-            )
-            choices = getattr(response, "choices", None)
-            if not choices:
-                raise RuntimeError("LiteLLM returned no completion choices")
-            message = getattr(choices[0], "message", None)
-            answer = getattr(message, "content", None)
+            response = litellm.responses(**response_options)
+            answer = _extract_response_text(response)
             interaction_id = getattr(response, "id", None)
-            if not isinstance(answer, str) or not answer.strip():
+            if not answer:
                 raise RuntimeError("LiteLLM returned an empty or unsupported response")
             if not isinstance(interaction_id, str) or not interaction_id:
                 raise RuntimeError("LiteLLM response did not include an interaction ID")
@@ -123,6 +130,7 @@ def answer_chat(
             interaction_id=interaction_id,
             user_message=query,
             system_message=answer,
+            expected_previous_response_id=previous_response_id,
         )
         return conversation_id, answer
     finally:

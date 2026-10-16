@@ -48,7 +48,7 @@ def get_chat_ids() -> list[ChatId]:
     try:
         return list_chat_ids()
     except ConfigurationError as exc:
-        logger.error("Required chat configuration is missing: %s", exc)
+        logger.exception("Required chat configuration is missing: %s", exc)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except PyMongoError as exc:
         logger.exception("MongoDB chat listing failed")

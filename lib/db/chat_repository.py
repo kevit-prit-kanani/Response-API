@@ -109,45 +109,30 @@ def get_chat_conversation(
     }
 
 
-def get_interaction_history(
+def get_latest_response_id(
     session_id: str,
-    previous_interaction_id: str | None,
-) -> list[Interaction]:
-    if previous_interaction_id is None:
-        return []
-
-    collection = _get_chat_collection()
-    document = collection.find_one(
+    previous_interaction_id: str,
+) -> str:
+    document = _get_chat_collection().find_one(
         {
             "session_id": session_id,
             "previous_interaction_id": previous_interaction_id,
-        }
+        },
+        {"_id": 0, "interaction_id": 1},
     )
     if document is None:
         raise KeyError(previous_interaction_id)
-    interactions = document.get("interactions")
-    if not isinstance(interactions, list):
+    interaction_id = document.get("interaction_id")
+    if not isinstance(interaction_id, str) or not interaction_id:
         raise RuntimeError(
-            f"Chat interaction {previous_interaction_id} has invalid history"
+            f"Conversation {previous_interaction_id} has no latest interaction ID"
         )
-
-    history: list[Interaction] = []
-    for interaction in interactions:
-        if (
-            not isinstance(interaction, dict)
-            or not isinstance(interaction.get("user"), str)
-            or not isinstance(interaction.get("system"), str)
-        ):
-            raise RuntimeError(
-                f"Chat interaction {previous_interaction_id} has invalid history"
-            )
-        history.append(
-            {
-                "user": interaction["user"],
-                "system": interaction["system"],
-            }
+    if interaction_id.startswith("chatcmpl-"):
+        raise ConversationConflictError(
+            "This conversation uses a Chat Completions ID and cannot be resumed "
+            "with the Responses API. Start a new conversation."
         )
-    return history
+    return interaction_id
 
 
 def store_interaction(
@@ -156,6 +141,7 @@ def store_interaction(
     interaction_id: str,
     user_message: str,
     system_message: str,
+    expected_previous_response_id: str | None,
 ) -> str:
     collection = _get_chat_collection()
     interaction = {"user": user_message, "system": system_message}
@@ -176,30 +162,18 @@ def store_interaction(
                 "The LLM returned an interaction ID already used in this session"
             ) from exc
     else:
-        current = collection.find_one(
-            {
-                "session_id": session_id,
-                "previous_interaction_id": previous_interaction_id,
-            },
-            {"_id": 1, "interaction_id": 1},
-        )
-        if current is None:
-            raise KeyError(previous_interaction_id)
         conversation_id = previous_interaction_id
-
-        latest_interaction_id = current.get("interaction_id")
-        if not isinstance(latest_interaction_id, str) or not latest_interaction_id:
+        if not expected_previous_response_id:
             raise RuntimeError(
-                f"Conversation {previous_interaction_id} has no latest interaction ID"
+                "A previous provider response ID is required to update a conversation"
             )
 
         try:
             result = collection.update_one(
                 {
-                    "_id": current["_id"],
                     "session_id": session_id,
                     "previous_interaction_id": previous_interaction_id,
-                    "interaction_id": latest_interaction_id,
+                    "interaction_id": expected_previous_response_id,
                 },
                 {
                     "$set": {
